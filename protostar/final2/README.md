@@ -1,7 +1,5 @@
 ## Protostar final2 writeup
 
-This is my first writeup so i hope it's not too messy or hard to understand
-
 [Challenge's page](https://exploit-exercises.lains.space/protostar/final2/)
 
 This is your standard Doug lea heap implementaion exploit, that could be a bit of a headacha, especially if you're
@@ -165,7 +163,8 @@ if we open an another terminal and try to connect to it using netcat with 'nc 12
 [pid 2485] dup2(4, 2) = 2
 ...
 [pid 2485] read(4,
-```                   
+```
+
 a new process is created with fork which have its stdout, stderr and stdin set to the socket connecetd to our necat session, then 'read' is called on our socket
 which must be in 'get_requests'.
 so, let's have a look at 'get_requests' function's code
@@ -192,3 +191,71 @@ while(1) {
   }
 ```
 it enters an infinite loop which breaks if input is less that constant REQSZ or if the first 4 bytes are not "FSRD"
+then, 'check_path' function is called
+
+```C
+  p = rindex(buf, '/');
+  l = strlen(p);
+  if(p){
+     start = strstr(buf, "ROOT");
+     if(start) {
+         while(*start != '/') start--;
+         memmove(start, p, l);
+     }
+  }
+```
+'p' is set to point to the last '/' in buf
+
+'l' is the lenght of the string after 'p'
+
+and 'start' is set to the first '/' before the string "ROOT"
+
+then data of the string 'p' is moved to where 'start' is.
+
+We obviously need to find a way to controll 'memmove' to rewrite heap chunk meta data.
+
+but first, we need a string that passes all the if's to our 'memmove', so our string that:
+1. is exactly 128 bytes long
+2. the first 4 bytes must be "FSRD"
+3. contains a '/'
+4. contains the string "ROOT"
+
+now attach gdb to the final2 process
+
+>root@protostar:~# ps -ef | grep final2
+```
+root      3086     1  0 19:07 ?        00:00:00 /opt/protostar/bin/final2
+root      3095  3051  0 19:08 pts/7    00:00:00 grep final2
+```
+>root@protostar:~# gdb -p 3086
+
+in gdb, set the follow-fork-mode to child
+
+>(gdb) set follow-fork-mode child
+
+and the disassembly-flavor to intel
+
+>(gdb) set disassembly-flavor intel
+
+now set a break point at 'memmove'
+```
+0x0804bd40 <check_path+112>:    call   0x8048f8c <memmove@plt>
+0x0804bd45 <check_path+117>:    leave
+0x0804bd46 <check_path+118>:    ret
+```
+>(gdb) break \*0x0804bd40
+
+and continue
+>(gdb) continue
+
+now the proccess is waiting for input
+
+let's write a quick python script and using sockets to interact the proc
+
+```python
+import socket
+
+s = socket.socket(socket.AF_INET)
+s.connect(('127.1', 2993))
+```
+this creates a socket that we can use to send and recive data.
